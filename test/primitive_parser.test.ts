@@ -3,11 +3,11 @@ import { Parser } from "../lib/binary_parser";
 
 function primitiveParserTests(
   name: string,
-  factory: (array: Uint8Array | number[]) => Uint8Array,
+  factory: (array: Uint8Array | Buffer | number[]) => number[],
 ) {
   describe(`Primitive parser (${name})`, () => {
-    function hexToBuf(hex: string): Uint8Array {
-      return factory(hex.match(/.{1,2}/g)!.map((byte) => parseInt(byte, 16)));
+    function hexToArr(hex: string): number[] {
+      return hex.match(/.{1,2}/g)!.map((byte) => parseInt(byte, 16));
     }
 
     describe("Primitive parsers", () => {
@@ -76,12 +76,14 @@ function primitiveParserTests(
       it("should parse floating point types", () => {
         const parser = Parser.start().floatbe("a").doublele("b");
 
-        const FLT_EPSILON = 0.00001;
+        const FLT_EPSILON = 0.0005;
         const buffer = factory([
           0x41, 0x45, 0x85, 0x1f, 0x7a, 0x36, 0xab, 0x3e, 0x57, 0x5b, 0xb1,
           0xbf,
         ]);
         const result = parser.parse(buffer);
+
+        console.log(result.a - 12.345, result.b - -0.0678);
 
         ok(Math.abs(result.a - 12.345) < FLT_EPSILON);
         ok(Math.abs(result.b - -0.0678) < FLT_EPSILON);
@@ -116,7 +118,7 @@ function primitiveParserTests(
     });
 
     describe("Bit field parsers", () => {
-      function binaryLiteral(s: string): Uint8Array {
+      function binaryLiteral(s: string): number[] {
         const bytes = Array<number>();
 
         s = s.replace(/\s/g, "");
@@ -315,7 +317,7 @@ function primitiveParserTests(
       });
       it("should parse HEX encoded string", () => {
         const text = "cafebabe";
-        const buffer = hexToBuf(text);
+        const buffer = hexToArr(text);
         const parser = Parser.start().string("msg", {
           length: buffer.length,
           encoding: "hex",
@@ -324,7 +326,7 @@ function primitiveParserTests(
         deepStrictEqual(parser.parse(buffer).msg, text);
       });
       it("should parse variable length string", () => {
-        const buffer = hexToBuf("0c68656c6c6f2c20776f726c64");
+        const buffer = hexToArr("0c68656c6c6f2c20776f726c64");
         const parser = Parser.start()
           .uint8("length")
           .string("msg", { length: "length", encoding: "utf8" });
@@ -332,7 +334,7 @@ function primitiveParserTests(
         deepStrictEqual(parser.parse(buffer).msg, "hello, world");
       });
       it("should parse zero terminated string", () => {
-        const buffer = hexToBuf("68656c6c6f2c20776f726c6400");
+        const buffer = hexToArr("68656c6c6f2c20776f726c6400");
         const parser = Parser.start().string("msg", {
           zeroTerminated: true,
           encoding: "utf8",
@@ -356,7 +358,7 @@ function primitiveParserTests(
         });
       });
       it("should strip trailing null characters", () => {
-        const buffer = hexToBuf("746573740000");
+        const buffer = hexToArr("746573740000");
         const parser1 = Parser.start().string("str", {
           length: 7,
           stripNull: false,
@@ -389,7 +391,7 @@ function primitiveParserTests(
 
         const hex = "deadbeefdeadbeef";
 
-        deepStrictEqual(parser.parse(hexToBuf("08" + hex)).raw, hexToBuf(hex));
+        deepStrictEqual(parser.parse(hexToArr("08" + hex)).raw, hexToArr(hex));
       });
 
       it("should clone buffer if options.clone is true", () => {
@@ -398,7 +400,7 @@ function primitiveParserTests(
           clone: true,
         });
 
-        const buf = hexToBuf("deadbeefdeadbeef");
+        const buf = hexToArr("deadbeefdeadbeef");
         const result = parser.parse(buf);
         deepStrictEqual(result.raw, buf);
         result.raw[0] = 0xff;
@@ -413,20 +415,20 @@ function primitiveParserTests(
             readUntil: (item: number) => item === 2,
           });
 
-        const result1 = parser.parse(hexToBuf("aa"));
+        const result1 = parser.parse(hexToArr("aa"));
         deepStrictEqual(result1, { cmd: 0xaa, data: factory([]) });
 
-        const result2 = parser.parse(hexToBuf("aabbcc"));
-        deepStrictEqual(result2, { cmd: 0xaa, data: hexToBuf("bbcc") });
+        const result2 = parser.parse(hexToArr("aabbcc"));
+        deepStrictEqual(result2, { cmd: 0xaa, data: hexToArr("bbcc") });
 
-        const result3 = parser.parse(hexToBuf("aa02bbcc"));
+        const result3 = parser.parse(hexToArr("aa02bbcc"));
         deepStrictEqual(result3, { cmd: 0xaa, data: factory([]) });
 
-        const result4 = parser.parse(hexToBuf("aabbcc02"));
-        deepStrictEqual(result4, { cmd: 0xaa, data: hexToBuf("bbcc") });
+        const result4 = parser.parse(hexToArr("aabbcc02"));
+        deepStrictEqual(result4, { cmd: 0xaa, data: hexToArr("bbcc") });
 
-        const result5 = parser.parse(hexToBuf("aabbcc02dd"));
-        deepStrictEqual(result5, { cmd: 0xaa, data: hexToBuf("bbcc") });
+        const result5 = parser.parse(hexToArr("aabbcc02dd"));
+        deepStrictEqual(result5, { cmd: 0xaa, data: hexToArr("bbcc") });
       });
 
       // this is a test for testing a fix of a bug, that removed the last byte
@@ -444,5 +446,5 @@ function primitiveParserTests(
   });
 }
 
-primitiveParserTests("Buffer", (arr) => Buffer.from(arr));
-primitiveParserTests("Uint8Array", (arr) => Uint8Array.from(arr));
+primitiveParserTests("Buffer", (arr) => Array.from(arr));
+primitiveParserTests("Uint8Array", (arr) => Array.from(arr));

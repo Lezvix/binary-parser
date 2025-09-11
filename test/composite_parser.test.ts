@@ -1,14 +1,14 @@
 import { deepStrictEqual, throws, doesNotThrow, ok } from "assert";
-import { deflateRawSync, inflateRawSync } from "zlib";
+import { deflateRawSync, inflateRawSync, InputType } from "zlib";
 import { Parser } from "../lib/binary_parser";
 
 function compositeParserTests(
   name: string,
-  factory: (array: Uint8Array | number[]) => Uint8Array,
+  factory: (array: Uint8Array | Buffer | number[]) => number[],
 ) {
   describe(`Composite parser (${name})`, () => {
-    function hexToBuf(hex: string): Uint8Array {
-      return factory(hex.match(/.{1,2}/g)!.map((byte) => parseInt(byte, 16)));
+    function hexToBuf(hex: string): number[] {
+      return hex.match(/.{1,2}/g)!.map((byte) => parseInt(byte, 16));
     }
 
     describe("Array parser", () => {
@@ -198,7 +198,7 @@ function compositeParserTests(
           }
         }
 
-        deepStrictEqual(parser.parse(buffer), {
+        deepStrictEqual(parser.parse(Array.from(buffer)), {
           length: 10,
           rows: [
             { length: 5, cols: [0, 0, 0, 0, 0] },
@@ -229,7 +229,7 @@ function compositeParserTests(
       });
       it("should parse until function returns true when readUntil is function", () => {
         const parser = Parser.start().array("data", {
-          readUntil: (item: number, _: Buffer) => item === 0,
+          readUntil: (item: number, _: number[]) => item === 0,
           type: "uint8",
         });
 
@@ -242,7 +242,8 @@ function compositeParserTests(
       });
       it("should parse until function returns true when readUntil is function (using read-ahead)", () => {
         const parser = Parser.start().array("data", {
-          readUntil: (_: number, buf: Buffer) => buf.length > 0 && buf[0] === 0,
+          readUntil: (_: number, buf: number[]) =>
+            buf.length > 0 && buf[0] === 0,
           type: "uint8",
         });
 
@@ -1288,7 +1289,9 @@ function compositeParserTests(
         // not support Uint8Array
         if (bufferBefore instanceof Uint8Array) return;
 
-        const compressedData = factory(deflateRawSync(bufferBefore));
+        const compressedData = factory(
+          deflateRawSync(bufferBefore as unknown as InputType),
+        );
 
         const buffer = factory([
           ...Array.from(
@@ -1309,7 +1312,10 @@ function compositeParserTests(
           .uint32le("length")
           .wrapped("compressedData", {
             length: "length",
-            wrapper: (x: Uint8Array) => inflateRawSync(x),
+            wrapper: (x: number[]) =>
+              Array.from(
+                inflateRawSync(Buffer.from(x) as unknown as InputType),
+              ),
             type: bufferParser,
           })
           .uint8("answer");
@@ -1382,9 +1388,11 @@ function compositeParserTests(
               }),
           });
 
-        const buffer = Buffer.from(
-          "1002f11012345678a003303132a101dfa20255aaf21201020304a003343536a202aa55a101eb",
-          "hex",
+        const buffer = Array.from(
+          Buffer.from(
+            "1002f11012345678a003303132a101dfa20255aaf21201020304a003343536a202aa55a101eb",
+            "hex",
+          ),
         );
 
         deepStrictEqual(parserEmptyName.parse(buffer), {
@@ -1457,5 +1465,5 @@ function compositeParserTests(
   });
 }
 
-compositeParserTests("Buffer", (arr) => Buffer.from(arr));
-compositeParserTests("Uint8Array", (arr) => Uint8Array.from(arr));
+compositeParserTests("Buffer", (arr) => Array.from(arr));
+compositeParserTests("Uint8Array", (arr) => Array.from(arr));

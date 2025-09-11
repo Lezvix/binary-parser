@@ -117,7 +117,7 @@ interface ParserOptions {
   type?: string | Parser;
   formatter?: (item: any) => any;
   encoding?: string;
-  readUntil?: "eof" | ((item: any, buffer: Buffer) => boolean);
+  readUntil?: "eof" | ((item: any, buffer: number[]) => boolean);
   greedy?: boolean;
   choices?: { [key: number]: string | Parser };
   defaultChoice?: string | Parser;
@@ -127,7 +127,7 @@ interface ParserOptions {
   key?: string;
   tag?: string | ((item: any) => number);
   offset?: number | string | ((item: any) => number);
-  wrapper?: (buffer: Buffer) => Buffer;
+  wrapper?: (buffer: number[]) => number[];
 }
 
 type Types = PrimitiveTypes | ComplexTypes;
@@ -232,47 +232,173 @@ const PRIMITIVE_SIZES: { [key in PrimitiveTypes]: number } = {
   doublebe: 8,
 };
 
-const PRIMITIVE_NAMES: { [key in PrimitiveTypes]: string } = {
-  uint8: "Uint8",
-  uint16le: "Uint16",
-  uint16be: "Uint16",
-  uint32le: "Uint32",
-  uint32be: "Uint32",
-  int8: "Int8",
-  int16le: "Int16",
-  int16be: "Int16",
-  int32le: "Int32",
-  int32be: "Int32",
-  int64be: "BigInt64",
-  int64le: "BigInt64",
-  uint64be: "BigUint64",
-  uint64le: "BigUint64",
-  floatle: "Float32",
-  floatbe: "Float32",
-  doublele: "Float64",
-  doublebe: "Float64",
-};
+// Helper functions for ES5 byte array operations
+const ES5_HELPERS = `
+function readUint8(buffer, offset) {
+  return buffer[offset];
+}
 
-const PRIMITIVE_LITTLE_ENDIANS: { [key in PrimitiveTypes]: boolean } = {
-  uint8: false,
-  uint16le: true,
-  uint16be: false,
-  uint32le: true,
-  uint32be: false,
-  int8: false,
-  int16le: true,
-  int16be: false,
-  int32le: true,
-  int32be: false,
-  int64be: false,
-  int64le: true,
-  uint64be: false,
-  uint64le: true,
-  floatle: true,
-  floatbe: false,
-  doublele: true,
-  doublebe: false,
-};
+function readInt8(buffer, offset) {
+  var val = buffer[offset];
+  return val > 127 ? val - 256 : val;
+}
+
+function readUint16LE(buffer, offset) {
+  return buffer[offset] | (buffer[offset + 1] << 8);
+}
+
+function readUint16BE(buffer, offset) {
+  return (buffer[offset] << 8) | buffer[offset + 1];
+}
+
+function readInt16LE(buffer, offset) {
+  var val = readUint16LE(buffer, offset);
+  return val > 32767 ? val - 65536 : val;
+}
+
+function readInt16BE(buffer, offset) {
+  var val = readUint16BE(buffer, offset);
+  return val > 32767 ? val - 65536 : val;
+}
+
+function readUint32LE(buffer, offset) {
+  return (buffer[offset] | 
+          (buffer[offset + 1] << 8) | 
+          (buffer[offset + 2] << 16) |
+          (buffer[offset + 3] << 24)) >>> 0;
+}
+
+function readUint32BE(buffer, offset) {
+  return ((buffer[offset] << 24) |
+          (buffer[offset + 1] << 16) |
+          (buffer[offset + 2] << 8) |
+          buffer[offset + 3]) >>> 0;
+}
+
+function readInt32LE(buffer, offset) {
+  return buffer[offset] | 
+         (buffer[offset + 1] << 8) | 
+         (buffer[offset + 2] << 16) |
+         (buffer[offset + 3] << 24);
+}
+
+function readInt32BE(buffer, offset) {
+  return (buffer[offset] << 24) |
+         (buffer[offset + 1] << 16) |
+         (buffer[offset + 2] << 8) |
+         buffer[offset + 3];
+}
+
+function readFloatLE(buffer, offset) {
+  var bytes = [buffer[offset], buffer[offset + 1], buffer[offset + 2], buffer[offset + 3]];
+  return bytesToFloat(bytes, true);
+}
+
+function readFloatBE(buffer, offset) {
+  var bytes = [buffer[offset], buffer[offset + 1], buffer[offset + 2], buffer[offset + 3]];
+  return bytesToFloat(bytes, false);
+}
+
+function readDoubleLE(buffer, offset) {
+  var bytes = [];
+  for (var i = 0; i < 8; i++) {
+    bytes[i] = buffer[offset + i];
+  }
+  return bytesToDouble(bytes, true);
+}
+
+function readDoubleBE(buffer, offset) {
+  var bytes = [];
+  for (var i = 0; i < 8; i++) {
+    bytes[i] = buffer[offset + i];
+  }
+  return bytesToDouble(bytes, false);
+}
+
+function bytesToFloat(bytes, littleEndian) {
+  var buf = littleEndian ? bytes : [bytes[3], bytes[2], bytes[1], bytes[0]];
+  var sign = (buf[3] >> 7) === 0 ? 1 : -1;
+  var exp = (((buf[3] & 127) << 1) | (buf[2] >> 7)) - 127;
+  var mant = ((buf[2] & 127) << 16) | (buf[1] << 8) | buf[0];
+  
+  if (exp === 128) {
+    return mant !== 0 ? NaN : sign * Infinity;
+  }
+  if (exp === -127) {
+    return sign * mant * Math.pow(2, -126 - 23);
+  }
+  return sign * (1 + mant * Math.pow(2, -23)) * Math.pow(2, exp);
+}
+
+function bytesToDouble(bytes, littleEndian) {
+  var buf = littleEndian ? bytes : bytes.slice().reverse();
+  var sign = (buf[7] >> 7) === 0 ? 1 : -1;
+  var exp = (((buf[7] & 127) << 4) | (buf[6] >> 4)) - 1023;
+  
+  var mant = (buf[6] & 15) * Math.pow(2, 48);
+  for (var i = 5; i >= 0; i--) {
+    mant += buf[i] * Math.pow(2, (5 - i) * 8);
+  }
+  
+  if (exp === 1024) {
+    return mant !== 0 ? NaN : sign * Infinity;
+  }
+  if (exp === -1023) {
+    return sign * mant * Math.pow(2, -1022 - 52);
+  }
+  return sign * (1 + mant * Math.pow(2, -52)) * Math.pow(2, exp);
+}
+
+function readUint64LE(buffer, offset) {
+  var low = readUint32LE(buffer, offset);
+  var high = readUint32LE(buffer, offset + 4);
+  return high * 4294967296 + low;
+}
+
+function readUint64BE(buffer, offset) {
+  var high = readUint32BE(buffer, offset);
+  var low = readUint32BE(buffer, offset + 4);
+  return high * 4294967296 + low;
+}
+
+function readInt64LE(buffer, offset) {
+  var low = readUint32LE(buffer, offset);
+  var high = readInt32LE(buffer, offset + 4);
+  return high * 4294967296 + low;
+}
+
+function readInt64BE(buffer, offset) {
+  var high = readInt32BE(buffer, offset);
+  var low = readUint32BE(buffer, offset + 4);
+  return high * 4294967296 + low;
+}
+
+function arraySlice(arr, start, end) {
+  var result = [];
+  end = end || arr.length;
+  for (var i = start; i < end; i++) {
+    result.push(arr[i]);
+  }
+  return result;
+}
+
+function decodeString(bytes, encoding) {
+  var str = '';
+  if (encoding === 'hex') {
+    for (var i = 0; i < bytes.length; i++) {
+      var hex = bytes[i].toString(16);
+      str += hex.length === 1 ? '0' + hex : hex;
+    }
+    return str;
+  }
+  
+  // Simple UTF-8 decoding for ES5
+  for (var i = 0; i < bytes.length; i++) {
+    str += String.fromCharCode(bytes[i]);
+  }
+  return str;
+}
+`;
 
 export class Parser {
   varName = "";
@@ -293,13 +419,65 @@ export class Parser {
   }
 
   private primitiveGenerateN(type: PrimitiveTypes, ctx: Context) {
-    const typeName = PRIMITIVE_NAMES[type];
-    const littleEndian = PRIMITIVE_LITTLE_ENDIANS[type];
-    ctx.pushCode(
-      `${ctx.generateVariable(
-        this.varName,
-      )} = dataView.get${typeName}(offset, ${littleEndian});`,
-    );
+    const varName = ctx.generateVariable(this.varName);
+
+    switch (type) {
+      case "uint8":
+        ctx.pushCode(`${varName} = readUint8(buffer, offset);`);
+        break;
+      case "int8":
+        ctx.pushCode(`${varName} = readInt8(buffer, offset);`);
+        break;
+      case "uint16le":
+        ctx.pushCode(`${varName} = readUint16LE(buffer, offset);`);
+        break;
+      case "uint16be":
+        ctx.pushCode(`${varName} = readUint16BE(buffer, offset);`);
+        break;
+      case "int16le":
+        ctx.pushCode(`${varName} = readInt16LE(buffer, offset);`);
+        break;
+      case "int16be":
+        ctx.pushCode(`${varName} = readInt16BE(buffer, offset);`);
+        break;
+      case "uint32le":
+        ctx.pushCode(`${varName} = readUint32LE(buffer, offset);`);
+        break;
+      case "uint32be":
+        ctx.pushCode(`${varName} = readUint32BE(buffer, offset);`);
+        break;
+      case "int32le":
+        ctx.pushCode(`${varName} = readInt32LE(buffer, offset);`);
+        break;
+      case "int32be":
+        ctx.pushCode(`${varName} = readInt32BE(buffer, offset);`);
+        break;
+      case "uint64le":
+        ctx.pushCode(`${varName} = readUint64LE(buffer, offset);`);
+        break;
+      case "uint64be":
+        ctx.pushCode(`${varName} = readUint64BE(buffer, offset);`);
+        break;
+      case "int64le":
+        ctx.pushCode(`${varName} = readInt64LE(buffer, offset);`);
+        break;
+      case "int64be":
+        ctx.pushCode(`${varName} = readInt64BE(buffer, offset);`);
+        break;
+      case "floatle":
+        ctx.pushCode(`${varName} = readFloatLE(buffer, offset);`);
+        break;
+      case "floatbe":
+        ctx.pushCode(`${varName} = readFloatBE(buffer, offset);`);
+        break;
+      case "doublele":
+        ctx.pushCode(`${varName} = readDoubleLE(buffer, offset);`);
+        break;
+      case "doublebe":
+        ctx.pushCode(`${varName} = readDoubleBE(buffer, offset);`);
+        break;
+    }
+
     ctx.pushCode(`offset += ${PRIMITIVE_SIZES[type]};`);
   }
 
@@ -371,38 +549,27 @@ export class Parser {
     return this.primitiveN("int32be", varName, options);
   }
 
-  private bigIntVersionCheck() {
-    if (!DataView.prototype.getBigInt64)
-      throw new Error("BigInt64 is unsupported on this runtime");
-  }
-
   int64(varName: string, options: ParserOptions = {}): this {
-    this.bigIntVersionCheck();
     return this.primitiveN(this.useThisEndian("int64"), varName, options);
   }
 
   int64be(varName: string, options: ParserOptions = {}): this {
-    this.bigIntVersionCheck();
     return this.primitiveN("int64be", varName, options);
   }
 
   int64le(varName: string, options: ParserOptions = {}): this {
-    this.bigIntVersionCheck();
     return this.primitiveN("int64le", varName, options);
   }
 
   uint64(varName: string, options: ParserOptions = {}): this {
-    this.bigIntVersionCheck();
     return this.primitiveN(this.useThisEndian("uint64"), varName, options);
   }
 
   uint64be(varName: string, options: ParserOptions = {}): this {
-    this.bigIntVersionCheck();
     return this.primitiveN("uint64be", varName, options);
   }
 
   uint64le(varName: string, options: ParserOptions = {}): this {
-    this.bigIntVersionCheck();
     return this.primitiveN("uint64le", varName, options);
   }
 
@@ -767,9 +934,8 @@ export class Parser {
   private getContext(importPath: string): Context {
     const ctx = new Context(importPath, this.useContextVariables);
 
-    ctx.pushCode(
-      "var dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.length);",
-    );
+    // Add ES5 helper functions
+    ctx.pushCode(ES5_HELPERS);
 
     if (!this.alias) {
       this.addRawCode(ctx);
@@ -841,9 +1007,8 @@ export class Parser {
     const ctx = this.getContext(importPath);
     this.compiled = new Function(
       importPath,
-      "TextDecoder",
       `return function (buffer, constructorFn) { ${ctx.code} };`,
-    )(ctx.imports, TextDecoder);
+    )(ctx.imports);
   }
 
   sizeOf(): number {
@@ -898,7 +1063,7 @@ export class Parser {
   }
 
   // Follow the parser chain till the root and start parsing from there
-  parse(buffer: Buffer | Uint8Array) {
+  parse(buffer: number[]) {
     if (!this.compiled) {
       this.compile();
     }
@@ -1088,18 +1253,18 @@ export class Parser {
 
       const getBytes = (sum: number) => {
         if (sum <= 8) {
-          ctx.pushCode(`${val} = dataView.getUint8(offset);`);
+          ctx.pushCode(`${val} = readUint8(buffer, offset);`);
           sum = 8;
         } else if (sum <= 16) {
-          ctx.pushCode(`${val} = dataView.getUint16(offset);`);
+          ctx.pushCode(`${val} = readUint16BE(buffer, offset);`);
           sum = 16;
         } else if (sum <= 24) {
           ctx.pushCode(
-            `${val} = (dataView.getUint16(offset) << 8) | dataView.getUint8(offset + 2);`,
+            `${val} = (readUint16BE(buffer, offset) << 8) | readUint8(buffer, offset + 2);`,
           );
           sum = 24;
         } else {
-          ctx.pushCode(`${val} = dataView.getUint32(offset);`);
+          ctx.pushCode(`${val} = readUint32BE(buffer, offset);`);
           sum = 32;
         }
         ctx.pushCode(`offset += ${sum / 8};`);
@@ -1170,44 +1335,34 @@ export class Parser {
     const name = ctx.generateVariable(this.varName);
     const start = ctx.generateTmpVariable();
     const encoding = this.options.encoding!;
-    const isHex = encoding.toLowerCase() === "hex";
-    const toHex = 'b => b.toString(16).padStart(2, "0")';
 
     if (this.options.length && this.options.zeroTerminated) {
       const len = this.options.length;
       ctx.pushCode(`var ${start} = offset;`);
       ctx.pushCode(
-        `while(dataView.getUint8(offset++) !== 0 && offset - ${start} < ${len});`,
+        `while(readUint8(buffer, offset++) !== 0 && offset - ${start} < ${len});`,
       );
       const end = `offset - ${start} < ${len} ? offset - 1 : offset`;
       ctx.pushCode(
-        isHex
-          ? `${name} = Array.from(buffer.subarray(${start}, ${end}), ${toHex}).join('');`
-          : `${name} = new TextDecoder('${encoding}').decode(buffer.subarray(${start}, ${end}));`,
+        `${name} = decodeString(arraySlice(buffer, ${start}, ${end}), '${encoding}');`,
       );
     } else if (this.options.length) {
       const len = ctx.generateOption(this.options.length);
       ctx.pushCode(
-        isHex
-          ? `${name} = Array.from(buffer.subarray(offset, offset + ${len}), ${toHex}).join('');`
-          : `${name} = new TextDecoder('${encoding}').decode(buffer.subarray(offset, offset + ${len}));`,
+        `${name} = decodeString(arraySlice(buffer, offset, offset + ${len}), '${encoding}');`,
       );
       ctx.pushCode(`offset += ${len};`);
     } else if (this.options.zeroTerminated) {
       ctx.pushCode(`var ${start} = offset;`);
-      ctx.pushCode("while(dataView.getUint8(offset++) !== 0);");
+      ctx.pushCode("while(readUint8(buffer, offset++) !== 0);");
       ctx.pushCode(
-        isHex
-          ? `${name} = Array.from(buffer.subarray(${start}, offset - 1), ${toHex}).join('');`
-          : `${name} = new TextDecoder('${encoding}').decode(buffer.subarray(${start}, offset - 1));`,
+        `${name} = decodeString(arraySlice(buffer, ${start}, offset - 1), '${encoding}');`,
       );
     } else if (this.options.greedy) {
       ctx.pushCode(`var ${start} = offset;`);
       ctx.pushCode("while(buffer.length > offset++);");
       ctx.pushCode(
-        isHex
-          ? `${name} = Array.from(buffer.subarray(${start}, offset), ${toHex}).join('');`
-          : `${name} = new TextDecoder('${encoding}').decode(buffer.subarray(${start}, offset));`,
+        `${name} = decodeString(arraySlice(buffer, ${start}, offset), '${encoding}');`,
       );
     }
     if (this.options.stripNull) {
@@ -1226,25 +1381,25 @@ export class Parser {
       ctx.pushCode(`var ${start} = offset;`);
       ctx.pushCode(`var ${cur} = 0;`);
       ctx.pushCode(`while (offset < buffer.length) {`);
-      ctx.pushCode(`${cur} = dataView.getUint8(offset);`);
+      ctx.pushCode(`${cur} = readUint8(buffer, offset);`);
       const func = ctx.addImport(pred);
       ctx.pushCode(
-        `if (${func}.call(${ctx.generateVariable()}, ${cur}, buffer.subarray(offset))) break;`,
+        `if (${func}.call(${ctx.generateVariable()}, ${cur}, arraySlice(buffer, offset))) break;`,
       );
       ctx.pushCode(`offset += 1;`);
       ctx.pushCode(`}`);
-      ctx.pushCode(`${varName} = buffer.subarray(${start}, offset);`);
+      ctx.pushCode(`${varName} = arraySlice(buffer, ${start}, offset);`);
     } else if (this.options.readUntil === "eof") {
-      ctx.pushCode(`${varName} = buffer.subarray(offset);`);
+      ctx.pushCode(`${varName} = arraySlice(buffer, offset);`);
     } else {
       const len = ctx.generateOption(this.options.length!);
 
-      ctx.pushCode(`${varName} = buffer.subarray(offset, offset + ${len});`);
+      ctx.pushCode(`${varName} = arraySlice(buffer, offset, offset + ${len});`);
       ctx.pushCode(`offset += ${len};`);
     }
 
     if (this.options.clone) {
-      ctx.pushCode(`${varName} = buffer.constructor.from(${varName});`);
+      ctx.pushCode(`${varName} = arraySlice(${varName}, 0);`);
     }
   }
 
@@ -1281,11 +1436,8 @@ export class Parser {
 
     if (typeof type === "string") {
       if (!aliasRegistry.get(type)) {
-        const typeName = PRIMITIVE_NAMES[type as PrimitiveTypes];
-        const littleEndian = PRIMITIVE_LITTLE_ENDIANS[type as PrimitiveTypes];
-        ctx.pushCode(
-          `var ${item} = dataView.get${typeName}(offset, ${littleEndian});`,
-        );
+        const readFunc = this.getPrimitiveReadFunction(type as PrimitiveTypes);
+        ctx.pushCode(`var ${item} = ${readFunc}(buffer, offset);`);
         ctx.pushCode(`offset += ${PRIMITIVE_SIZES[type as PrimitiveTypes]};`);
       } else {
         const tempVar = ctx.generateTmpVariable();
@@ -1339,8 +1491,49 @@ export class Parser {
       const pred = this.options.readUntil;
       const func = ctx.addImport(pred);
       ctx.pushCode(
-        `while (!${func}.call(${ctx.generateVariable()}, ${item}, buffer.subarray(offset)));`,
+        `while (!${func}.call(${ctx.generateVariable()}, ${item}, arraySlice(buffer, offset)));`,
       );
+    }
+  }
+
+  private getPrimitiveReadFunction(type: PrimitiveTypes): string {
+    switch (type) {
+      case "uint8":
+        return "readUint8";
+      case "int8":
+        return "readInt8";
+      case "uint16le":
+        return "readUint16LE";
+      case "uint16be":
+        return "readUint16BE";
+      case "int16le":
+        return "readInt16LE";
+      case "int16be":
+        return "readInt16BE";
+      case "uint32le":
+        return "readUint32LE";
+      case "uint32be":
+        return "readUint32BE";
+      case "int32le":
+        return "readInt32LE";
+      case "int32be":
+        return "readInt32BE";
+      case "uint64le":
+        return "readUint64LE";
+      case "uint64be":
+        return "readUint64BE";
+      case "int64le":
+        return "readInt64LE";
+      case "int64be":
+        return "readInt64BE";
+      case "floatle":
+        return "readFloatLE";
+      case "floatbe":
+        return "readFloatBE";
+      case "doublele":
+        return "readDoubleLE";
+      case "doublebe":
+        return "readDoubleBE";
     }
   }
 
@@ -1352,11 +1545,8 @@ export class Parser {
     if (typeof type === "string") {
       const varName = ctx.generateVariable(this.varName);
       if (!aliasRegistry.has(type)) {
-        const typeName = PRIMITIVE_NAMES[type as PrimitiveTypes];
-        const littleEndian = PRIMITIVE_LITTLE_ENDIANS[type as PrimitiveTypes];
-        ctx.pushCode(
-          `${varName} = dataView.get${typeName}(offset, ${littleEndian});`,
-        );
+        const readFunc = this.getPrimitiveReadFunction(type as PrimitiveTypes);
+        ctx.pushCode(`${varName} = ${readFunc}(buffer, offset);`);
         ctx.pushCode(`offset += ${PRIMITIVE_SIZES[type as PrimitiveTypes]}`);
       } else {
         const tempVar = ctx.generateTmpVariable();
@@ -1469,41 +1659,37 @@ export class Parser {
       ctx.pushCode(`var ${start} = offset;`);
       ctx.pushCode(`var ${cur} = 0;`);
       ctx.pushCode(`while (offset < buffer.length) {`);
-      ctx.pushCode(`${cur} = dataView.getUint8(offset);`);
+      ctx.pushCode(`${cur} = readUint8(buffer, offset);`);
       const func = ctx.addImport(pred);
       ctx.pushCode(
-        `if (${func}.call(${ctx.generateVariable()}, ${cur}, buffer.subarray(offset))) break;`,
+        `if (${func}.call(${ctx.generateVariable()}, ${cur}, arraySlice(buffer, offset))) break;`,
       );
       ctx.pushCode(`offset += 1;`);
       ctx.pushCode(`}`);
-      ctx.pushCode(`${wrappedBuf} = buffer.subarray(${start}, offset);`);
+      ctx.pushCode(`${wrappedBuf} = arraySlice(buffer, ${start}, offset);`);
     } else if (this.options.readUntil === "eof") {
-      ctx.pushCode(`${wrappedBuf} = buffer.subarray(offset);`);
+      ctx.pushCode(`${wrappedBuf} = arraySlice(buffer, offset);`);
     } else {
       const len = ctx.generateOption(this.options.length!);
-      ctx.pushCode(`${wrappedBuf} = buffer.subarray(offset, offset + ${len});`);
+      ctx.pushCode(
+        `${wrappedBuf} = arraySlice(buffer, offset, offset + ${len});`,
+      );
       ctx.pushCode(`offset += ${len};`);
     }
 
     if (this.options.clone) {
-      ctx.pushCode(`${wrappedBuf} = buffer.constructor.from(${wrappedBuf});`);
+      ctx.pushCode(`${wrappedBuf} = arraySlice(${wrappedBuf}, 0);`);
     }
 
     const tempBuf = ctx.generateTmpVariable();
     const tempOff = ctx.generateTmpVariable();
-    const tempView = ctx.generateTmpVariable();
     const func = ctx.addImport(this.options.wrapper);
-    ctx.pushCode(
-      `${wrappedBuf} = ${func}.call(this, ${wrappedBuf}).subarray(0);`,
-    );
+    ctx.pushCode(`${wrappedBuf} = ${func}.call(this, ${wrappedBuf});`);
     ctx.pushCode(`var ${tempBuf} = buffer;`);
     ctx.pushCode(`var ${tempOff} = offset;`);
-    ctx.pushCode(`var ${tempView} = dataView;`);
     ctx.pushCode(`buffer = ${wrappedBuf};`);
     ctx.pushCode(`offset = 0;`);
-    ctx.pushCode(
-      `dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.length);`,
-    );
+
     if (this.options.type instanceof Parser) {
       if (this.varName) {
         ctx.pushCode(`${wrapperVar} = {};`);
@@ -1522,7 +1708,6 @@ export class Parser {
       }
     }
     ctx.pushCode(`buffer = ${tempBuf};`);
-    ctx.pushCode(`dataView = ${tempView};`);
     ctx.pushCode(`offset = ${tempOff};`);
   }
 
@@ -1586,11 +1771,8 @@ export class Parser {
         ctx.addReference(this.options.type!);
       }
     } else if (Object.keys(PRIMITIVE_SIZES).indexOf(this.options.type!) >= 0) {
-      const typeName = PRIMITIVE_NAMES[type as PrimitiveTypes];
-      const littleEndian = PRIMITIVE_LITTLE_ENDIANS[type as PrimitiveTypes];
-      ctx.pushCode(
-        `${nestVar} = dataView.get${typeName}(offset, ${littleEndian});`,
-      );
+      const readFunc = this.getPrimitiveReadFunction(type as PrimitiveTypes);
+      ctx.pushCode(`${nestVar} = ${readFunc}(buffer, offset);`);
       ctx.pushCode(`offset += ${PRIMITIVE_SIZES[type as PrimitiveTypes]};`);
     }
 
